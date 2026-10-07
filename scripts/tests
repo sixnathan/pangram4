@@ -1,0 +1,7 @@
+import json 
+from datasets import load_from_disk 
+ds = load_from_disk ( 'data/raw/mirage' ) ['train'] 
+with open ( 'data/mirage_pairs.jsonl', 'w' ) as f : 
+	for row in ds : 
+		f.write ( json.dumps ( {'s': row['originial'], 't' : row ['rewritten' ] } ) + '\n') 
+print ( 'done' ) 

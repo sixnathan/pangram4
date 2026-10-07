@@ -1,0 +1,13 @@
+# environments & package caches
+.venv/
+__pycache__/
+*.pyc
+
+# datasets (too big for git; keep local copies elsewhere — several sources are DMCA-takedown-prone, see research/dataset-hunt.md)
+data/
+scripts/data/
+
+# experiment artifacts
+scripts/wandb/
+checkpoints/
+logs/
