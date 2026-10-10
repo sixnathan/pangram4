@@ -11,3 +11,6 @@ scripts/data/
 scripts/wandb/
 checkpoints/
 logs/
+
+# editor swap files
+*.swp

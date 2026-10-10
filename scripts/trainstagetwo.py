@@ -16,14 +16,12 @@ from torch.utils.data import DataLoader
 from model import load_model, count_params, build_lora_config
 
 EPOCHS = 2
-BATCH = 16          # Repeat2 doubles sequence length to 1024; attention cost
-                    # scales ~4x per sequence, so halve the batch vs stage 1
+BATCH = 16
 LR = 1e-4
-HUMANIZER_WEIGHT = 0.25  # same as stage 1: humanizer can't distort the main task
-IGNORE = -100            # pytorch ignore-index; copy 1 of Repeat2 is all IGNORE
+HUMANIZER_WEIGHT = 0.25
+IGNORE = -100
 STAGE1_CKPT = "../checkpoints/stage1.pt"
 CKPT = "../checkpoints/stage2.pt"
-
 
 def collate_repeat2(batch):
     """batch is a LIST of 16 example-dicts (plain Python lists inside).
@@ -42,7 +40,6 @@ def collate_repeat2(batch):
         "is_humanized":   torch.tensor([b["is_humanized"] for b in batch]),
         "is_mixed":       torch.tensor([b["is_mixed"] for b in batch]),
     }
-
 
 @torch.no_grad()
 def evaluate(model, loader, loss_fn):
@@ -64,17 +61,16 @@ def evaluate(model, loader, loss_fn):
 
         correct["seg_acc"] += (seg.argmax(dim=1) == batch["f_ai_bucket"]).sum().item()
         correct["hum_acc"] += (hum.argmax(dim=1) == batch["is_humanized"]).sum().item()
-        mask = labels.ne(IGNORE)  # (B, 1024) bool: True = real token on copy 2
+        mask = labels.ne(IGNORE)
         correct["tok_acc"] += (tok.argmax(dim=-1) == labels)[mask].sum().item()
         tok_total += mask.sum().item()
         correct["mixed_acc"] += (mixed.argmax(dim=1) == batch["is_mixed"]).sum().item()
         n_batches += 1
-    model.train()  # dropout back on
+    model.train()
     out = {k: v / n_batches for k, v in sums.items()}
     out.update({k: v / (len(loader.dataset)) for k, v in correct.items() if k != "tok_acc"})
-    out["tok_acc"] = correct["tok_acc"] / tok_total  # per-TOKEN, not per-example
+    out["tok_acc"] = correct["tok_acc"] / tok_total
     return out
-
 
 def merge_stage1():
     """Load the stage-1 checkpoint, fold its trained LoRA into the base weights
@@ -83,17 +79,14 @@ def merge_stage1():
     task from scratch without destroying it (paper Table 2)."""
     model = load_model(stage=2)
     missing, unexpected = model.load_state_dict(torch.load(STAGE1_CKPT), strict=False)
-    # strict=False: stage1.pt has no tokenwise/mixed keys -> they stay random.
-    # everything TRAINED (backbone LoRA + segment + humanizer) must be covered:
     bad = [k for k in missing if "tokenwise_head" not in k and "mixed_head" not in k]
     assert not bad, f"stage-1 checkpoint is missing trained keys: {bad}"
     assert not unexpected, f"checkpoint has keys this model doesn't: {unexpected}"
     print(f"stage-1 loaded; left randomly initialized: {len(missing)} new-head tensors")
 
-    merged = model.backbone.merge_and_unload()  # LoRA delta folded into W; wrapper gone
-    model.backbone = get_peft_model(merged, build_lora_config())  # fresh adapter, same recipe
+    merged = model.backbone.merge_and_unload()
+    model.backbone = get_peft_model(merged, build_lora_config())
     return model
-
 
 def main():
     if not os.path.exists(STAGE1_CKPT):
@@ -119,15 +112,12 @@ def main():
     val_dl = DataLoader(val_ds, batch_size=BATCH, collate_fn=collate_repeat2, num_workers=4)
     print(f"train: {len(train_ds)} | val: {len(val_ds)}")
 
-    # one-time collate sanity: copy 1 must be pure IGNORE, shapes must be 1024
     check = next(iter(DataLoader(val_ds, batch_size=2, collate_fn=collate_repeat2)))
     assert (check["token_labels"][:, :512] == IGNORE).all(), "copy 1 is not fully masked!"
     assert check["input_ids"].shape == (2, 1024), f"bad shape {check['input_ids'].shape}"
     print(f"collate OK: input {tuple(check['input_ids'].shape)}, "
           f"copy 1 masked, {int((check['token_labels'] != IGNORE).sum())} real label positions")
 
-    # CE with ignore_index skips IGNORE positions when computing loss/mean;
-    # seg/hum/mixed targets are never IGNORE so it changes nothing for them
     loss_fn = CrossEntropyLoss(ignore_index=IGNORE)
     opt = AdamW([p for p in model.parameters() if p.requires_grad], lr=LR)
 
@@ -143,9 +133,9 @@ def main():
             loss_tok = loss_fn(tok.reshape(-1, tok.size(-1)), batch["token_labels"].reshape(-1))
             loss_mixed = loss_fn(mixed, batch["is_mixed"])
             loss = loss_seg + loss_tok + loss_mixed + loss_hum
-            loss.backward()   # gradient of loss wrt every trainable param
-            opt.step()        # move params against those gradients
-            opt.zero_grad()   # clear grads so next batch starts fresh
+            loss.backward()
+            opt.step()
+            opt.zero_grad()
             running += loss.item()
             wandb.log({"train/loss": loss.item(),
                        "train/loss_seg": loss_seg.item(),
@@ -157,7 +147,7 @@ def main():
                 print(f"epoch {epoch} step {step:>5}/{len(train_dl)}  "
                       f"loss {loss.item():.4f}  {time.time() - t0:.0f}s")
             if step > 0 and step % 1000 == 0:
-                torch.save(model.state_dict(), CKPT)  # crash insurance mid-epoch
+                torch.save(model.state_dict(), CKPT)
                 print("   checkpoint saved (mid-epoch)")
 
         vals = evaluate(model, val_dl, loss_fn)
@@ -168,12 +158,11 @@ def main():
               f"tok {vals['tok_loss']:.4f}/{vals['tok_acc']:.3f} "
               f"mixed {vals['mixed_loss']:.4f}/{vals['mixed_acc']:.3f} "
               f"hum {vals['hum_loss']:.4f}/{vals['hum_acc']:.3f} | {time.time() - t0:.0f}s")
-        torch.save(model.state_dict(), CKPT)  # full model incl. merged backbone, ~3.4GB
+        torch.save(model.state_dict(), CKPT)
         print(f"   checkpoint saved -> {CKPT}")
 
     print("training done")
     run.finish()
-
 
 if __name__ == "__main__":
     main()
