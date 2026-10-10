@@ -8,19 +8,25 @@ from transformers import AutoTokenizer
 
 from model import load_model
 
-model = load_model()
-model.load_state_dict(torch.load("../checkpoints/stage1.pt"))
-model.eval()
 
-tok = AutoTokenizer.from_pretrained("Qwen/Qwen3-1.7B")
+def main():
+    model = load_model()
+    model.load_state_dict(torch.load("../checkpoints/stage1.pt"))
+    model.eval()
 
-text = sys.argv[1] if len(sys.argv) > 1 else input("text to check: ")
-enc = tok(text, return_tensors="pt", truncation=True, max_length=512).to("cuda")
+    tok = AutoTokenizer.from_pretrained("Qwen/Qwen3-1.7B")
 
-with torch.no_grad():
-    seg, hum = model(enc["input_ids"], enc["attention_mask"])
+    text = sys.argv[1] if len(sys.argv) > 1 else input("text to check: ")
+    enc = tok(text, return_tensors="pt", truncation=True, max_length=512).to("cuda")
 
-bucket = int(seg.argmax(dim=1))
-label = ["human", "ai", "humanized_ai", "mixed"][int(hum.argmax(dim=1))]
-print(f"f_ai bucket: {bucket}/14  (~{bucket / 15:.0%} AI-written)")
-print(f"humanizer : {label}")
+    with torch.no_grad():
+        seg, hum = model(enc["input_ids"], enc["attention_mask"])
+
+    bucket = int(seg.argmax(dim=1))
+    label = ["human", "ai", "humanized_ai", "mixed"][int(hum.argmax(dim=1))]
+    print(f"f_ai bucket: {bucket}/14  (~{bucket / 15:.0%} AI-written)")
+    print(f"humanizer : {label}")
+
+
+if __name__ == "__main__":
+    main()

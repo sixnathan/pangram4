@@ -1,22 +1,25 @@
+"""Clause-level AI-text labeler.
+
+Scores each clause of a rewritten text against windows of the source text:
+lexical evidence of copying (char n-gram F1) and semantic evidence of
+paraphrase (embedding cosine). Run:
+    uv run python labeler.py pairs.jsonl out.jsonl
+"""
 import argparse
 import json
 
-import torch
 from sentence_transformers import SentenceTransformer
 
 from softgrams import splitclauses
 from chargnramsf1 import make_grams, f1_from_grams
 
-LEX_HUMAN = 0.8
-SEM_ASSISTED = 0.7
-UNION_DEPTH = 3
+LEX_HUMAN = 0.8      # lexical F1 at/above this -> copied from source -> human
+SEM_ASSISTED = 0.7   # cosine at/above this (below lexical gate) -> ai_assisted
+UNION_DEPTH = 3      # candidate windows span at most this many adjacent clauses
 
-def semantic_sim(model, a: str, b: str) -> float:
-    ea, eb = model.encode([a, b], convert_to_tensor=True, normalize_embeddings=True)
-    return float(torch.dot(ea, eb))
 
 def candidates(s_clauses: list) -> list:
-    """Singles + unions of up to UNION_DEPTH adjacent clauses."""
+    """Singles + unions of up to UNION_DEPTH adjacent clauses, as plain texts."""
     out = []
     for i in range(len(s_clauses)):
         text = ""
@@ -25,33 +28,24 @@ def candidates(s_clauses: list) -> list:
             out.append(text)
     return out
 
-def label_clause(model, clause: str, s_clauses: list) -> str:
-    if not clause.strip():
-        return "human"
-    cands = candidates(s_clauses)
-    if not cands:
-        return "ai_generated"
-    cands.sort(key=lambda c: charngramf1(clause, c), reverse=True)
-    x = cands[0]
-    L = charngramf1(clause, x)
-    E = semantic_sim(model, clause, x)
-    if L >= LEX_HUMAN:
-        return "human"
-    if E >= SEM_ASSISTED:
-        return "ai_assisted"
-    return "ai_generated"
 
 def label_pair(model, s_text: str, t_text: str) -> dict:
+    """Label every clause of t_text against windows of s_text.
+
+    Returns {"t_text", "clauses": [{"text","start","end","label"}, ...],
+    "f_ai"} where f_ai = char-weighted AI fraction (ai_assisted counts half).
+    """
     t_clauses = splitclauses(t_text)
     s_clauses = splitclauses(s_text)
     cands = candidates(s_clauses)
 
+    # precompute once per pair: grams + embeddings for every candidate
     cand_grams = [make_grams(c) for c in cands]
     cand_emb = model.encode(cands, convert_to_tensor=True, normalize_embeddings=True)
 
     texts = [c[0] for c in t_clauses]
     clause_emb = model.encode(texts, convert_to_tensor=True, normalize_embeddings=True)
-    E_matrix = (clause_emb @ cand_emb.T).tolist()
+    E_matrix = (clause_emb @ cand_emb.T).tolist()  # cosine sim, clause x candidate
 
     clauses = []
     counts = {"human": 0, "ai_assisted": 0, "ai_generated": 0}
@@ -63,28 +57,34 @@ def label_pair(model, s_text: str, t_text: str) -> dict:
         else:
             g = make_grams(text)
             lex = [f1_from_grams(g, cg) for cg in cand_grams]
-            xi = max(range(len(cands)), key=lambda i: lex[i])
+            xi = max(range(len(cands)), key=lambda i: lex[i])  # best-match span
             L, E = lex[xi], erow[xi]
-            label = "human" if L >= LEX_HUMAN else ("ai_assisted" if E >= SEM_ASSISTED else "ai_generated")
+            label = ("human" if L >= LEX_HUMAN
+                     else ("ai_assisted" if E >= SEM_ASSISTED else "ai_generated"))
         clauses.append({"text": text, "start": start, "end": end, "label": label})
         counts[label] += end - start
     total = counts["human"] + counts["ai_assisted"] + counts["ai_generated"]
     f_ai = (0.5 * counts["ai_assisted"] + counts["ai_generated"]) / total if total else 0.0
     return {"t_text": t_text, "clauses": clauses, "f_ai": round(f_ai, 4)}
 
+
 LABEL_COLORS = {"human": "\033[92m", "ai_assisted": "\033[93m", "ai_generated": "\033[91m"}
 RESET = "\033[0m"
 
+
 def pretty_print(labeled: dict):
+    """Print the labeled clauses color-coded by label."""
     for c in labeled["clauses"]:
         print(f"{LABEL_COLORS[c['label']]}{c['text']}{RESET}", end="")
     print(f"\n  f_ai = {labeled['f_ai']}\n")
+
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("pairs_jsonl")
     ap.add_argument("out_jsonl")
-    ap.add_argument("--inspect", action="store_true", help="print colorized labels instead of writing file")
+    ap.add_argument("--inspect", action="store_true",
+                    help="print colorized labels instead of writing file")
     ap.add_argument("--limit", type=int, default=0, help="only label the first N pairs")
     args = ap.parse_args()
 
@@ -103,6 +103,7 @@ def main():
             if args.limit and n >= args.limit:
                 break
     print(f"labeled {n} pairs")
+
 
 if __name__ == "__main__":
     main()
